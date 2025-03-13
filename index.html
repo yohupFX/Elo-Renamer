@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local File Processor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin: 20px; }
+        #progress-container { width: 100%; background: #ddd; border-radius: 5px; display: none; margin-top: 10px; }
+        #progress-bar { width: 0%; height: 20px; background: #4caf50; border-radius: 5px; transition: width 0.2s; }
+        #status, #error-log { margin-top: 10px; font-size: 14px; }
+        #error-log { color: red; white-space: pre-wrap; text-align: left; background: #fff3f3; border: 1px solid red; padding: 10px; max-width: 600px; margin: auto; }
+    </style>
+</head>
+<body>
+    <h2>Excel File</h2>
+    <input type="file" id="excelFile" accept=".xlsx, .xls">
+    <button onclick="saveExcelPath()">Load Excel</button>
+    <p id="excelStatus">No Excel file loaded</p>
+
+    <h2>ZIP File</h2>
+    <input type="file" id="zipFile" accept=".zip">
+    <button onclick="processZip()">Process</button>
+
+    <div id="progress-container">
+        <div id="progress-bar"></div>
+    </div>
+    <p id="status"></p>
+    <div id="error-log"></div>
+
+    <script>
+        let excelData = {}; 
+        let errorLog = [];
+        let filenameCounts = {}; // Track duplicate filenames
+
+        function logError(message) {
+            errorLog.push(message);
+            document.getElementById("error-log").innerText = errorLog.join("\n");
+        }
+
+        function saveExcelPath() {
+            let file = document.getElementById("excelFile").files[0];
+            if (!file) {
+                logError("Please select an Excel file.");
+                return;
+            }
+
+            let reader = new FileReader();
+            reader.onload = function (e) {
+                let data = new Uint8Array(e.target.result);
+                let workbook = XLSX.read(data, { type: "array" });
+                let sheet = workbook.Sheets[workbook.SheetNames[0]];
+                let rows = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+
+                excelData = {};
+                rows.forEach(row => {
+                    if (row.length >= 2) {
+                        excelData[row[0].toString()] = row[1];
+                    }
+                });
+
+                document.cookie = `excelPath=${encodeURIComponent(file.name)}; path=/; max-age=31536000`;
+                localStorage.setItem("excelData", JSON.stringify(excelData));
+
+                document.getElementById("excelStatus").innerText = `Excel loaded: ${file.name}`;
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function getCookie(name) {
+            let match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+            return match ? decodeURIComponent(match[2]) : "";
+        }
+
+        window.onload = function () {
+            let savedPath = getCookie("excelPath");
+            let savedExcelData = localStorage.getItem("excelData");
+            if (savedPath) {
+                document.getElementById("excelStatus").innerText = `Last Excel used: ${savedPath}`;
+            }
+            if (savedExcelData) {
+                excelData = JSON.parse(savedExcelData);
+            }
+        };
+
+        function generateUniqueFilename(filename) {
+            let baseName = filename.replace(/\.\w+$/, ""); // Remove extension
+            let ext = filename.split(".").pop();
+            let newFilename = filename;
+
+            if (filenameCounts[newFilename]) {
+                let count = filenameCounts[newFilename];
+                newFilename = `${baseName} (${count}).${ext}`;
+                filenameCounts[newFilename] = count + 1;
+            } else {
+                filenameCounts[newFilename] = 2;
+            }
+
+            return newFilename;
+        }
+
+        async function processZip() {
+            let zipFile = document.getElementById("zipFile").files[0];
+            if (!zipFile) {
+                logError("Please select a ZIP file.");
+                return;
+            }
+            if (Object.keys(excelData).length === 0) {
+                logError("Please load an Excel file first.");
+                return;
+            }
+
+            let progressContainer = document.getElementById("progress-container");
+            let progressBar = document.getElementById("progress-bar");
+            let status = document.getElementById("status");
+
+            progressContainer.style.display = "block";
+            progressBar.style.width = "0%";
+            status.innerText = "Extracting ZIP...";
+
+            let zip = new JSZip();
+            let newZip = new JSZip();
+            let zipContents = await zip.loadAsync(zipFile);
+            let fileCount = Object.keys(zipContents.files).length;
+            let processedFiles = 0;
+
+            for (let filename in zipContents.files) {
+                let file = zipContents.files[filename];
+                if (!file.dir) {
+                    let pathParts = filename.split("/");
+                    let containsElo = pathParts.some(part => part.toUpperCase().includes("ELO-OPDRACHT"));
+                    let containsTeLaat = pathParts.some(part => part.toUpperCase().includes("TE LAAT"));
+
+                    if (containsElo || containsTeLaat) {
+                        pathParts = pathParts.filter(part => !part.toUpperCase().includes("ELO-OPDRACHT")); // Remove ELO-OPDRACHT folder
+                        let newFilePath = pathParts.join("/"); 
+                        let fileData = await file.async("uint8array");
+
+                        let fileID = filename.match(/\b\d{6}\b/);
+                        let newName = pathParts.pop(); 
+
+                        if (fileID && fileID[0] in excelData) {
+                            newName = `${excelData[fileID[0]]}_${newName}`;
+                        }
+
+                        newName = generateUniqueFilename(newName); // Ensure unique names
+
+                        pathParts.push(newName);
+                        newFilePath = pathParts.join("/");
+
+                        newZip.file(newFilePath, fileData);
+                        processedFiles++;
+                    }
+                }
+            }
+
+            if (processedFiles === 0) {
+                logError("No 'ELO-OPDRACHT' or 'TE LAAT' folders found in the ZIP.");
+                status.innerText = "Error: No matching folders found.";
+                return;
+            }
+
+            progressBar.style.width = "80%";
+            status.innerText = "Creating new ZIP...";
+            let finalZipBlob = await newZip.generateAsync({ type: "blob" });
+            let zipUrl = URL.createObjectURL(finalZipBlob);
+
+            let downloadLink = document.createElement("a");
+            downloadLink.href = zipUrl;
+            downloadLink.download = "processed_files.zip";
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+
+            progressBar.style.width = "100%";
+            status.innerText = "Completed!";
+        }
+    </script>
+</body>
+</html>
