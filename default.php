@@ -24,13 +24,13 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_FILES["file"]) && isset($_PO
         if ($zip->open($filePath) === TRUE) {
             $zip->extractTo($extractPath);
             $zip->close();
-            unlink($filePath); // Remove original ZIP after extraction
+            unlink($filePath); // Remove original ZIP
         } else {
             die("Failed to extract ZIP file.");
         }
 
-        // Process files based on Excel data
-        require 'vendor/autoload.php'; // If using PHPSpreadsheet
+        // process files with excel data
+        require 'vendor/autoload.php'; 
         use PhpOffice\PhpSpreadsheet\IOFactory;
 
         try {
@@ -65,12 +65,12 @@ if ($_SERVER["REQUEST_METHOD"] == "POST" && isset($_FILES["file"]) && isset($_PO
 
         $zip->close();
 
-        // Serve ZIP file to user
+        // give back zip
         header("Content-Type: application/zip");
         header("Content-Disposition: attachment; filename=" . basename($processedZip));
         readfile($processedZip);
 
-        // Cleanup
+        // delete temp stuff
         array_map("unlink", glob("$extractPath/*"));
         rmdir($extractPath);
         unlink($processedZip);
